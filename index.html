@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TOLD</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TOLD">
+<meta name="theme-color" content="#141d26">
+<style>
+:root { --bg: #eef1f0; --card: #ffffff; --ink: #17222d; --muted: #586776; --rule: #c9d1d7; --accent: #245273; --bad: #a8261c; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0c131a; --card: #141d26; --ink: #dce4eb; --muted: #8d9caa; --rule: #283542; --accent: #8bbbe0; --bad: #ff8174; color-scheme: dark; } }
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.4 -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center;
+  padding: max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+form { width: 100%; max-width: 360px; display: grid; gap: 14px; background: var(--card); border: 1px solid var(--rule); border-radius: 14px; padding: 24px 20px; }
+img { width: 88px; height: 88px; border-radius: 20px; justify-self: center; }
+h1 { margin: 0; text-align: center; font-size: 22px; letter-spacing: .02em; }
+p { margin: 0; color: var(--muted); font-size: 14px; text-align: center; }
+input { width: 100%; min-height: 48px; border: 1px solid var(--rule); border-radius: 10px; background: var(--bg); padding: 10px 12px; font: inherit; color: inherit; }
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { min-height: 48px; border: 0; border-radius: 10px; background: var(--accent); color: var(--card); font: inherit; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .6; }
+.err { color: var(--bad); min-height: 1.4em; }
+</style>
+</head>
+<body>
+<form id="unlock" hidden>
+  <img src="icon-180.png" alt="">
+  <h1>C-130H TOLD</h1>
+  <p>Enter the passphrase to unlock the app on this device. You only need to do this once.</p>
+  <input id="pass" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Passphrase" aria-label="Passphrase">
+  <button id="go" type="submit">Unlock</button>
+  <p class="err" id="err" role="alert"></p>
+</form>
+<script>
+// Everything stays inside this function: the app page written over this one declares its own globals.
+(() => {
+const KEY = "told-key";
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+
+const form = document.getElementById("unlock"), err = document.getElementById("err"), go = document.getElementById("go");
+const b64 = (u8) => btoa(String.fromCharCode(...u8));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function payload() {
+  const r = await fetch("payload.bin");
+  if (!r.ok) throw new Error("download");
+  return new Uint8Array(await r.arrayBuffer());
+}
+async function decrypt(key, buf) {
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(16, 28) }, key, buf.slice(28));
+  return new TextDecoder().decode(pt);
+}
+function show(html) { document.open(); document.write(html); document.close(); }
+
+async function start() {
+  let buf;
+  try { buf = await payload(); } catch { form.hidden = false; err.textContent = "Couldn't load the app. Connect to the internet and open it again."; go.disabled = true; return; }
+  let saved = null;
+  try { saved = localStorage.getItem(KEY); } catch {}
+  if (saved) {
+    try { return show(await decrypt(await crypto.subtle.importKey("raw", unb64(saved), "AES-GCM", false, ["decrypt"]), buf)); }
+    catch { try { localStorage.removeItem(KEY); } catch {} }
+  }
+  form.hidden = false;
+  document.getElementById("pass").focus();
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.textContent = ""; go.disabled = true; go.textContent = "Unlocking…";
+    try {
+      const pass = document.getElementById("pass").value.trim();
+      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+      const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt: buf.slice(0, 16), iterations: 600000, hash: "SHA-256" },
+        base, { name: "AES-GCM", length: 256 }, true, ["decrypt"]);
+      const html = await decrypt(key, buf);
+      try { localStorage.setItem(KEY, b64(new Uint8Array(await crypto.subtle.exportKey("raw", key)))); } catch {}
+      show(html);
+    } catch {
+      err.textContent = "That passphrase isn't right. Check it and try again.";
+      go.disabled = false; go.textContent = "Unlock";
+    }
+  });
+}
+start();
+})();
+</script>
+</body>
+</html>
